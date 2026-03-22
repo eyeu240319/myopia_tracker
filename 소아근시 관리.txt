@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>우리아이 근시 관리</title>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; max-width: 980px; margin: 24px auto; padding: 0 16px; }
+    header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+    .card { border:1px solid #e0e0e0; border-radius:8px; padding:16px; margin-bottom:16px; background:#fff; }
+    input, button, select { font-size:14px; padding:8px; margin-top:6px; width:100%; box-sizing:border-box; }
+    .row { display:flex; gap:16px; }
+    .row > .card { flex:1; }
+    #app { display:none; }
+    ul { padding-left:20px; margin:0; }
+    .small { font-size:13px; color:#666; margin-top:8px; }
+    .inline { display:inline-block; width:auto; }
+    .top-actions { display:flex; gap:8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>우리아이 근시 관리</h1>
+    <div id="authStatus" class="small"></div>
+  </header>
+
+  <!-- Auth Card -->
+  <div id="authCard" class="card">
+    <h2>회원가입 / 로그인</h2>
+
+    <div id="signupBox">
+      <label>이메일</label>
+      <input id="signupEmail" type="email" placeholder="example@domain.com" />
+      <label>비밀번호</label>
+      <input id="signupPassword" type="password" placeholder="비밀번호" />
+      <button id="signupBtn">회원가입</button>
+      <p class="small">이미 계정이 있으면 아래 로그인 사용</p>
+    </div>
+
+    <hr />
+
+    <div id="loginBox">
+      <label>이메일</label>
+      <input id="loginEmail" type="email" placeholder="example@domain.com" />
+      <label>비밀번호</label>
+      <input id="loginPassword" type="password" placeholder="비밀번호" />
+      <button id="loginBtn">로그인</button>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="app">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <strong>현재 사용자</strong>
+          <div id="currentUserLabel" class="small"></div>
+        </div>
+        <div class="top-actions">
+          <button id="signOutBtn" class="inline">로그아웃</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <h3>측정값 입력</h3>
+        <label>측정 날짜</label>
+        <input id="dateInput" type="date" />
+        <label>우안 OD (mm)</label>
+        <input id="odInput" type="number" step="0.01" placeholder="예: 24.35" />
+        <label>좌안 OS (mm)</label>
+        <input id="osInput" type="number" step="0.01" placeholder="예: 24.10" />
+        <button id="saveBtn">저장</button>
+        <div id="saveMsg" class="small"></div>
+      </div>
+
+      <div class="card">
+        <h3>요약</h3>
+        <p>최근 우안: <strong id="latestOD">-</strong></p>
+        <p>최근 좌안: <strong id="latestOS">-</strong></p>
+        <p>우안 1년 증가량: <strong id="odGrowth">-</strong></p>
+        <p>좌안 1년 증가량: <strong id="osGrowth">-</strong></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>측정 기록</h3>
+      <ul id="recordList"></ul>
+    </div>
+
+    <div class="card">
+      <h3>그래프</h3>
+      <canvas id="odChart" height="120"></canvas>
+      <canvas id="osChart" height="120" style="margin-top:16px;"></canvas>
+    </div>
+  </div>
+
+  <script>
+    // TODO: 여기에 Firebase 설정 붙여넣기
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_AUTH_DOMAIN",
+      projectId: "YOUR_PROJECT_ID"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+
+    // DOM
+    const authCard = document.getElementById('authCard');
+    const appDiv = document.getElementById('app');
+    const authStatus = document.getElementById('authStatus');
+
+    const signupEmail = document.getElementById('signupEmail');
+    const signupPassword = document.getElementById('signupPassword');
+    const signupBtn = document.getElementById('signupBtn');
+
+    const loginEmail = document.getElementById('loginEmail');
+    const loginPassword = document.getElementById('loginPassword');
+    const loginBtn = document.getElementById('loginBtn');
+
+    const signOutBtn = document.getElementById('signOutBtn');
+    const currentUserLabel = document.getElementById('currentUserLabel');
+
+    const dateInput = document.getElementById('dateInput');
+    const odInput = document.getElementById('odInput');
+    const osInput = document.getElementById('osInput');
+    const saveBtn = document.getElementById('saveBtn');
+    const saveMsg = document.getElementById('saveMsg');
+
+    const recordList = document.getElementById('recordList');
+    const latestOD = document.getElementById('latestOD');
+    const latestOS = document.getElementById('latestOS');
+    const odGrowth = document.getElementById('odGrowth');
+    const osGrowth = document.getElementById('osGrowth');
+
+    let odChart = null;
+    let osChart = null;
+    let currentUid = null;
+
+    // 기본 날짜 설정
+    function setToday() {
+      const t = new Date();
+      const yyyy = t.getFullYear();
+      const mm = String(t.getMonth() + 1).padStart(2, '0');
+      const dd = String(t.getDate()).padStart(2, '0');
+      dateInput.value = `${yyyy}-${mm}-${dd}`;
+    }
+    setToday();
+
+    // 회원가입
+    signupBtn.onclick = async () => {
+      const email = signupEmail.value.trim();
+      const pw = signupPassword.value;
+      if (!email || !pw) return alert('이메일과 비밀번호를 입력하세요');
+      try {
+        const userCred = await auth.createUserWithEmailAndPassword(email, pw);
+        const uid = userCred.user.uid;
+        await db.collection('users').doc(uid).set({ email, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+        alert('회원가입 완료 후 자동 로그인 됩니다');
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+
+    // 로그인
+    loginBtn.onclick = async () => {
+      const email = loginEmail.value.trim();
+      const pw = loginPassword.value;
+      if (!email || !pw) return alert('이메일과 비밀번호를 입력하세요');
+      try {
+        await auth.signInWithEmailAndPassword(email, pw);
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+
+    // 로그아웃
+    signOutBtn.onclick = async () => {
+      await auth.signOut();
+    };
+
+    // 인증 상태 변화 감지
+    auth.onAuthStateChanged(async user => {
+      if (user) {
+        currentUid = user.uid;
+        authCard.style.display = 'none';
+        appDiv.style.display = 'block';
+        currentUserLabel.textContent = user.email;
+        authStatus.textContent = '로그인됨';
+        // ensure user doc exists
+        const uref = db.collection('users').doc(currentUid);
+        const udoc = await uref.get();
+        if (!udoc.exists) {
+          await uref.set({ email: user.email, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+        }
+        loadMeasurements();
+      } else {
+        currentUid = null;
+        authCard.style.display = 'block';
+        appDiv.style.display = 'none';
+        currentUserLabel.textContent = '';
+        authStatus.textContent = '로그아웃';
+      }
+    });
+
+    // 저장
+    saveBtn.onclick = async () => {
+      if (!currentUid) return alert('로그인 후 사용하세요');
+      const date = dateInput.value;
+      const od = parseFloat(odInput.value);
+      const os = parseFloat(osInput.value);
+      if (!date || isNaN(od) || isNaN(os)) return alert('날짜와 양안 값을 모두 입력하세요');
+
+      try {
+        await db.collection('users').doc(currentUid).collection('measurements').doc(date).set({ od, os }, { merge: true });
+        saveMsg.textContent = '저장되었습니다';
+        setTimeout(() => saveMsg.textContent = '', 2000);
+        odInput.value = '';
+        osInput.value = '';
+        loadMeasurements();
+      } catch (e) {
+        alert('저장 오류: ' + e.message);
+      }
+    };
+
+    // 데이터 불러오기
+    async function loadMeasurements() {
+      if (!currentUid) return;
+      const snap = await db.collection('users').doc(currentUid).collection('measurements').orderBy(firebase.firestore.FieldPath.documentId()).get();
+      const dates = [];
+      const odValues = [];
+      const osValues = [];
+      snap.forEach(doc => {
+        dates.push(doc.id);
+        const d = doc.data();
+        odValues.push(typeof d.od === 'number' ? d.od : null);
+        osValues.push(typeof d.os === 'number' ? d.os : null);
+      });
+      renderList(dates, odValues, osValues);
+      renderSummary(dates, odValues, osValues);
+      renderCharts(dates, odValues, osValues);
+    }
+
+    // 리스트 렌더
+    function renderList(dates, odValues, osValues) {
+      recordList.innerHTML = '';
+      if (dates.length === 0) {
+        const li = document.createElement('li');
+        li.textContent = '기록이 없습니다';
+        recordList.appendChild(li);
+        return;
+      }
+      for (let i = 0; i < dates.length; i++) {
+        const li = document.createElement('li');
+        const odText = odValues[i] === null ? '-' : odValues[i].toFixed(2);
+        const osText = osValues[i] === null ? '-' : osValues[i].toFixed(2);
+        li.textContent = `${dates[i]} → OD: ${odText} mm / OS: ${osText} mm`;
+        recordList.appendChild(li);
+      }
+    }
+
+    // 요약 렌더
+    function renderSummary(dates, odValues, osValues) {
+      latestOD.textContent = '-';
+      latestOS.textContent = '-';
+      odGrowth.textContent = '-';
+      osGrowth.textContent = '-';
+      if (dates.length === 0) return;
+
+      const last = dates.length - 1;
+      if (odValues[last] !== null) latestOD.textContent = odValues[last].toFixed(2) + ' mm';
+      if (osValues[last] !== null) latestOS.textContent = osValues[last].toFixed(2) + ' mm';
+
+      const oneYearAgo = getDateOneYearAgo(dates[last]);
+      let odBase = null;
+      let osBase = null;
+      for (let i = dates.length - 1; i >= 0; i--) {
+        if (dates[i] <= oneYearAgo) {
+          odBase = odValues[i];
+          osBase = osValues[i];
+          break;
+        }
+      }
+      if (odBase !== null && odValues[last] !== null) odGrowth.textContent = (odValues[last] - odBase).toFixed(2) + ' mm/년';
+      if (osBase !== null && osValues[last] !== null) osGrowth.textContent = (osValues[last] - osBase).toFixed(2) + ' mm/년';
+    }
+
+    function getDateOneYearAgo(dateStr) {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const dt = new Date(y, m - 1, d);
+      dt.setFullYear(dt.getFullYear() - 1);
+      const yyyy = dt.getFullYear();
+      const mm = String(dt.getMonth() + 1).padStart(2, '0');
+      const dd = String(dt.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    // 그래프 렌더
+    function renderCharts(dates, odValues, osValues) {
+      const odCtx = document.getElementById('odChart').getContext('2d');
+      const osCtx = document.getElementById('osChart').getContext('2d');
+      if (odChart) odChart.destroy();
+      if (osChart) osChart.destroy();
+
+      odChart = new Chart(odCtx, {
+        type: 'line',
+        data: {
+          labels: dates,
+          datasets: [{
+            label: '우안 OD (mm)',
+            data: odValues,
+            borderColor: 'blue',
+            backgroundColor: 'rgba(0,0,255,0.08)',
+            spanGaps: true,
+            tension: 0.2
+          }]
+        },
+        options: { responsive: true, scales: { y: { title: { display: true, text: 'mm' } } } }
+      });
+
+      osChart = new Chart(osCtx, {
+        type: 'line',
+        data: {
+          labels: dates,
+          datasets: [{
+            label: '좌안 OS (mm)',
+            data: osValues,
+            borderColor: 'crimson',
+            backgroundColor: 'rgba(255,0,0,0.08)',
+            spanGaps: true,
+            tension: 0.2
+          }]
+        },
+        options: { responsive: true, scales: { y: { title: { display: true, text: 'mm' } } } }
+      });
+    }
+  </script>
+</body>
+</html>
